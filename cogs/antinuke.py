@@ -10,6 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from help_pages import HelpView, overview_embed
 from utils import UserError
 
 log = logging.getLogger("bot")
@@ -427,6 +428,13 @@ class AntiNuke(commands.Cog):
                  "請用 `/antinuke whitelist add` 加入白名單\n"
                  "• 調整門檻：`/antinuke limit`；調整禁言時間：`/antinuke timeout`")
         await interaction.followup.send(text[:2000], ephemeral=True)
+
+    @antinuke.command(name="help", description="防炸群指令說明")
+    async def help(self, interaction: discord.Interaction):
+        cfg = await self.get_cfg(interaction.guild)
+        rules = "\n".join(f"• {RULES[k]}：{describe_rule(k, cfg['limits'][k])}" for k in RULES)
+        overview = overview_embed(rules, cfg["timeout_minutes"], cfg["enabled"])
+        await interaction.response.send_message(embed=overview, view=HelpView(overview), ephemeral=True)
 
     @antinuke.command(name="status", description="查看防炸群目前的設定")
     async def status(self, interaction: discord.Interaction):
