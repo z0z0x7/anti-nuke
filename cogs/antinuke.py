@@ -16,6 +16,7 @@ log = logging.getLogger("bot")
 
 RULES = {
     "channel_delete": "🗑️ 刪除頻道",
+    "channel_create": "➕ 建立頻道",
     "msg_flood": "💬 大量傳訊息",
     "msg_channels": "📢 跨頻道洗版",
 }
@@ -27,7 +28,7 @@ DEFAULTS = {
     "timeout_minutes": 60,
     "whitelist": [],
     # [次數, 秒數]：秒數內達到次數就處理
-    "limits": {"channel_delete": [3, 60], "msg_flood": [10, 10], "msg_channels": [4, 10]},
+    "limits": {"channel_delete": [3, 60], "channel_create": [5, 60], "msg_flood": [10, 10], "msg_channels": [4, 10]},
     # 被隔離的人：{user_id: {"roles": [role_id, ...], "at": 時間, "reason": 原因}}
     "quarantined": {},
 }
@@ -59,7 +60,8 @@ def load_cfg(raw: Optional[dict]) -> dict:
 
 def describe_rule(key: str, limit: list) -> str:
     count, seconds = limit
-    unit = {"channel_delete": f"刪除 {count} 個頻道", "msg_flood": f"傳 {count} 則訊息",
+    unit = {"channel_delete": f"刪除 {count} 個頻道", "channel_create": f"建立 {count} 個頻道",
+            "msg_flood": f"傳 {count} 則訊息",
             "msg_channels": f"在 {count} 個不同頻道發言"}[key]
     return f"{seconds} 秒內{unit}"
 
@@ -71,21 +73,24 @@ def user_line(user) -> str:
 # ---------- 偵測邏輯（不碰 Discord，方便用假資料測試） ----------
 
 class ActionTracker:
-    """記錄每個人最近做了幾次某個動作，達到門檻就回傳 True。"""
+    """記錄每個人最近做了幾次某個動作（和相關的東西，例如頻道名稱），
+    達到門檻就回傳這段時間內記下的東西，沒達到回傳 None。"""
 
     def __init__(self):
         self.events: dict[tuple, deque] = defaultdict(deque)
 
-    def hit(self, key: tuple, count: int, seconds: int, now: Optional[float] = None) -> bool:
+    def hit(self, key: tuple, count: int, seconds: int, item=None,
+            now: Optional[float] = None) -> Optional[list]:
         now = time.monotonic() if now is None else now
         q = self.events[key]
-        q.append(now)
-        while q and now - q[0] > seconds:
+        q.append((now, item))
+        while q and now - q[0][0] > seconds:
             q.popleft()
         if len(q) >= count:
+            items = [i for _, i in q]
             q.clear()
-            return True
-        return False
+            return items
+        return None
 
 
 class MessageTracker:
@@ -177,7 +182,9 @@ class AntiNuke(commands.Cog):
 
     # ---------- 處置 ----------
 
-    async def punish(self, guild: discord.Guild, user_id: int, cfg: dict, reason: str) -> None:
+    async def punish(self, guild: discord.Guild, user_id: int, cfg: dict, reason: str,
+                     extra: Optional[tuple[str, str]] = None) -> None:
+        """extra：多加在日誌裡的一欄（標題, 內容），例如被刪掉的頻道。"""
         if not self.start_handling((guild.id, user_id)):
             return
         log.warning("防炸群觸發：%s 的 %s，%s", guild.name, user_id, reason)
@@ -188,11 +195,15 @@ class AntiNuke(commands.Cog):
             except discord.HTTPException:
                 e = discord.Embed(title="🚨 防炸群觸發", color=RED,
                                   description=f"<@{user_id}>（ID `{user_id}`）\n**原因：**{reason}")
+                if extra:
+                    e.add_field(name=extra[0], value=extra[1][:1000], inline=False)
                 e.add_field(name="⚠️ 處置失敗", value="對方已經不在伺服器裡了。")
                 await self.alert(guild, cfg, e)
                 return
 
         e = discord.Embed(title="🚨 防炸群觸發", color=RED, description=f"{user_line(member)}\n**原因：**{reason}")
+        if extra:
+            e.add_field(name=extra[0], value=extra[1][:1000], inline=False)
         if member.top_role >= guild.me.top_role:
             e.add_field(name="⚠️ 處置失敗",
                         value="對方的身分組比機器人高或一樣高，機器人動不了他！\n"
@@ -285,15 +296,27 @@ class AntiNuke(commands.Cog):
 
     @commands.Cog.listener()
     async def on_audit_log_entry_create(self, entry: discord.AuditLogEntry):
-        if entry.action is not discord.AuditLogAction.channel_delete or entry.user_id is None:
+        if entry.action is discord.AuditLogAction.channel_delete:
+            rule = "channel_delete"
+            item = f"#{getattr(entry.before, 'name', None) or entry.target.id}"
+            title = "被刪掉的頻道（不會自動復原，請手動重建）"
+        elif entry.action is discord.AuditLogAction.channel_create:
+            rule = "channel_create"
+            item = f"<#{entry.target.id}>"
+            title = "他建立的頻道（沒有自動刪除，確認是洗版再手動刪）"
+        else:
             return
         guild = entry.guild
+        if entry.user_id is None:
+            return
         cfg = await self.get_cfg(guild)
         if not cfg["enabled"] or self.is_trusted(guild, entry.user_id, cfg):
             return
-        count, seconds = cfg["limits"]["channel_delete"]
-        if self.actions.hit((guild.id, entry.user_id), count, seconds):
-            await self.punish(guild, entry.user_id, cfg, describe_rule("channel_delete", [count, seconds]))
+        count, seconds = cfg["limits"][rule]
+        items = self.actions.hit((guild.id, entry.user_id, rule), count, seconds, item)
+        if items is not None:
+            await self.punish(guild, entry.user_id, cfg, describe_rule(rule, [count, seconds]),
+                              extra=(title, "、".join(items)))
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -400,7 +423,7 @@ class AntiNuke(commands.Cog):
         text = "✅ 防炸群已開啟！\n\n" + self.status_text(guild, cfg)
         if failed:
             text += "\n\n⚠️ 這些頻道設定失敗，隔離中的人可能還看得到：" + " ".join(failed)[:500]
-        text += ("\n\n📌 **提醒**\n• 其他會大量刪頻道或發訊息的機器人（例如你的開單機器人），"
+        text += ("\n\n📌 **提醒**\n• 其他會大量建頻道、刪頻道或發訊息的機器人（例如你的開單機器人），沒加白名單觸發時會被踢出，"
                  "請用 `/antinuke whitelist add` 加入白名單\n"
                  "• 調整門檻：`/antinuke limit`；調整禁言時間：`/antinuke timeout`")
         await interaction.followup.send(text[:2000], ephemeral=True)
