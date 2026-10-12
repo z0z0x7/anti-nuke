@@ -50,8 +50,20 @@ class Bot(commands.Bot):
 async def main():
     if not TOKEN:
         raise SystemExit("請在 Railway 的 Variables 設定 DISCORD_TOKEN")
-    async with Bot() as bot:
-        await bot.start(TOKEN)
+    delay = 60
+    while True:
+        try:
+            async with Bot() as bot:
+                await bot.start(TOKEN)
+            return
+        except discord.HTTPException as error:
+            if error.status != 429:
+                raise
+            # Railway 的 IP 是很多人共用的，偶爾會被 Discord（Cloudflare 1015）暫時封鎖。
+            # 直接當掉的話 Railway 會馬上重開、一直重連，反而被擋更久，所以改成等一下再試。
+            log.error("Discord 暫時擋住了這台主機的連線（429／Cloudflare 1015），%d 秒後自動重試…", delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 900)
 
 
 if __name__ == "__main__":
