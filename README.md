@@ -29,6 +29,7 @@ Python（discord.py）寫的防炸群（Anti-nuke）機器人，部署在 Railwa
 | 指令 | 說明 | 誰能用 |
 |---|---|---|
 | `/antinuke setup log_channel:#頻道` | 開啟防炸群，建立隔離身分組和隔離區 | 擁有者 |
+| `/antinuke help` | 指令說明和常見問題，用選單切換分類，會顯示目前的觸發條件 | 管理員 |
 | `/antinuke status` | 查看目前設定、白名單、隔離中的人 | 管理員 |
 | `/antinuke enable` | 開啟或關閉防炸群 | 擁有者 |
 | `/antinuke limit rule count seconds` | 調整觸發門檻 | 擁有者 |
@@ -64,6 +65,7 @@ Python（discord.py）寫的防炸群（Anti-nuke）機器人，部署在 Railwa
 ```
 main.py
 config_store.py
+help_pages.py
 utils.py
 requirements.txt
 railway.json
